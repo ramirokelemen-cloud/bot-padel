@@ -2,8 +2,15 @@ name: Bot turnos padel
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # cada 10 minutos (GitHub a veces se demora un poco)
-  workflow_dispatch:          # botón "Run workflow" para correrlo a mano
+    - cron: "0 12 * * *"         # resumen diario: 12:00 UTC = 9:00 hora argentina
+    - cron: "15,45 * * * *"      # alertas: cada 30 minutos (a los :15 y :45)
+  workflow_dispatch:             # botón "Run workflow" para correrlo a mano
+    inputs:
+      modo:
+        description: "Qué correr"
+        type: choice
+        options: [alertas, resumen]
+        default: alertas
 
 concurrency:
   group: bot-padel
@@ -12,7 +19,7 @@ concurrency:
 jobs:
   revisar:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -31,10 +38,11 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python bot.py
+          MODO: ${{ (github.event.schedule == '0 12 * * *' || inputs.modo == 'resumen') && '--resumen' || '' }}
+        run: python bot.py $MODO
 
       - name: Guardar turnos vistos
-        if: always()
+        if: always() && hashFiles('estado/vistos.json') != ''
         uses: actions/cache/save@v4
         with:
           path: estado
