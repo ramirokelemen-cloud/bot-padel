@@ -1,0 +1,57 @@
+# ============================================================
+#  CONFIGURACIÓN DEL BOT DE TURNOS DE PÁDEL (ATC)
+#  Editá solo lo que está a la derecha del signo "="
+#  Las líneas que empiezan con # son comentarios (el bot las ignora)
+# ============================================================
+
+# --- 1) CLUBES A VIGILAR ---------------------------------------
+# Para AGREGAR un club: entrá al club en atcsports.io, copiá el link
+# y pegalo como una línea más, entre comillas y con una coma al final.
+# Podés pegar el link entero (se ignoran día, horario y demás filtros del link).
+# Para QUITAR uno: borrá la línea o poné un # adelante.
+clubes = [
+    "tiger-padel-lanus",                           # Tiger Padel Lanús
+    "la-fortaleza-padel-lanus",                    # La Fortaleza Padel (Gerli)
+    "garage-padel-club-pineyro",                   # Garage Pádel Club (Piñeyro)
+    "casa-padel-lanus-oeste",                      # Casa Padel (Lanús Oeste)
+    "duomo-lomas-lomas-de-zamora",                 # Duomo Lomas
+    "setting-padel-social-club-lomas-de-zamora",   # Setting Padel & Social Club
+    # "https://atcsports.io/venues/otro-club",     # <- ejemplo de cómo sumar uno
+]
+
+# --- 2) CUÁNTOS DÍAS PARA ADELANTE ------------------------------
+# Cuántos días revisar contando hoy. 7 = toda la semana que viene.
+dias_adelante = 7
+
+# --- 3) DURACIÓN DEL TURNO -------------------------------------
+# Duraciones aceptadas en minutos. Ej: [60, 90, 120]. Dejá [] para cualquiera.
+duraciones = [90, 120]
+
+# --- 4) TIPO DE CANCHA -----------------------------------------
+# techada: "si" = solo techadas | "no" = solo al aire libre | "da_igual"
+techada = "si"
+
+# Superficie: cualquiera de "sintetico", "cemento", "blindex", "alfombra".
+# Dejá [] para aceptar cualquier superficie.
+superficies = []
+
+# Precio máximo en pesos por turno. Poné 0 para no filtrar por precio.
+precio_maximo = 0
+
+# --- 5) AVISO DEL PRIMER ARRANQUE ------------------------------
+# La primera vez que corre, ¿te mando la lista de lo que YA está libre?
+# (después solo te avisa de los turnos que se liberen)
+avisar_lo_que_ya_esta_libre = true
+
+# --- 6) HORARIOS POR DÍA ---------------------------------------
+# Rango de horario en que puede EMPEZAR el turno, formato "desde-hasta" (24 hs).
+# Para que un día no te avise nunca, dejalo vacío: ""
+# (esta sección tiene que quedar al final del archivo)
+[horarios]
+lunes     = "17:30-21:00"
+martes    = "17:30-21:00"
+miercoles = "17:30-21:00"
+jueves    = "17:30-21:00"
+viernes   = "17:30-21:00"
+sabado    = "12:00-19:00"
+domingo   = "12:00-19:00"
