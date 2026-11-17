@@ -26,6 +26,11 @@ dias_resumen = 2
 # ALERTAS (cada 30 min): cuántos días vigilar contando hoy. 7 = hoy + 6 días.
 dias_alertas = 7
 
+# Horario en que te pueden llegar las alertas ("desde-hasta", 24 hs).
+# Fuera de este horario el bot no revisa; lo que se libere de noche te lo
+# avisa en la primera revisión de la mañana. Dejá "" para que avise siempre.
+horario_avisos = "09:00-21:30"
+
 # Solo turnos que empiecen dentro de al menos estas horas (para organizar el partido).
 anticipacion_minima_horas = 2
 
