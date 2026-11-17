@@ -293,10 +293,14 @@ def guardar_estado(estado):
 
 # ---------------------------------------------------------------- modos
 
-def armar_resumen(cfg):
+def armar_resumen(cfg, turnos=None):
     dias = int(cfg.get("dias_resumen", 2))
-    turnos = buscar_turnos(cfg, dias)
     hoy = datetime.now(ARG).date()
+    if turnos is None:
+        turnos = buscar_turnos(cfg, dias)
+    else:
+        limite = (hoy + timedelta(days=dias - 1)).isoformat()
+        turnos = {k: t for k, t in turnos.items() if t["fecha_dia"] <= limite}
     titulo = "☀️ <b>Resumen del día</b>: turnos libres de hoy" + (" y mañana" if dias == 2 else f" y los próximos {dias - 1} días")
     if not turnos:
         return titulo + "\n\nNo hay ninguno que cumpla tus filtros. Te aviso si se libera alguno.", turnos
@@ -305,11 +309,33 @@ def armar_resumen(cfg):
 
 
 def resumen(cfg):
-    print(f"[{datetime.now(ARG):%d/%m %H:%M}] Armando el resumen diario...")
-    texto, turnos = armar_resumen(cfg)
+    """Resumen de las 9:00. Además deja la 'foto' de arranque del día: desde las 9:15
+    las alertas comparan contra esta foto, así no te repite lo que ya viste acá."""
+    dias = int(cfg.get("dias_alertas", 7))
+    ahora = datetime.now(ARG)
+    hasta = (ahora.date() + timedelta(days=dias - 1)).isoformat()
+    huella = huella_filtros(cfg)
+    print(f"[{ahora:%d/%m %H:%M}] Armando el resumen diario...")
+    todos = buscar_turnos(cfg, dias)
+    texto, turnos = armar_resumen(cfg, todos)
     print(f"  {len(turnos)} turno(s) en el resumen.")
+
+    # Lo que se liberó de noche para los días que el resumen no muestra: va al final,
+    # así no se pierde ninguna alerta.
+    anterior = leer_estado()
+    if anterior and anterior.get("filtros") == huella:
+        vistos = set(anterior.get("vistos", []))
+        de_noche = [t for k, t in todos.items()
+                    if k not in turnos and k not in vistos and t["fecha_dia"] <= anterior.get("hasta", hasta)]
+        if de_noche:
+            print(f"  {len(de_noche)} turno(s) liberados de noche para los días siguientes.")
+            texto += ("\n\n🌙 <b>Además, durante la noche se liberaron estos turnos para los próximos días:</b>\n\n"
+                      + "\n\n".join(describir(t) for t in agrupar(de_noche)))
+
     if not enviar_telegram(texto):
         sys.exit("No se pudo mandar el resumen a Telegram.")
+    guardar_estado({"filtros": huella, "hasta": hasta, "vistos": sorted(todos),
+                    "resumen": ahora.date().isoformat()})
     print("  Listo.")
 
 
@@ -327,8 +353,14 @@ def alertas(cfg):
     hasta = (ahora.date() + timedelta(days=dias - 1)).isoformat()
     huella = huella_filtros(cfg)
     print(f"[{ahora:%d/%m %H:%M}] Buscando turnos liberados en {len(clubes(cfg))} club(es), hasta el {hasta}...")
-    actuales = buscar_turnos(cfg, dias)
     anterior = leer_estado()
+    if (anterior and anterior.get("resumen") != ahora.date().isoformat()
+            and ahora.hour < 11 and "--resumen" not in sys.argv):
+        # El resumen de las 9:00 todavía no salió (GitHub a veces se demora): lo espero,
+        # así arranca el día él y las alertas siguen desde ahí.
+        print(f"[{ahora:%d/%m %H:%M}] Todavía no salió el resumen de hoy: espero a la próxima revisión.")
+        return
+    actuales = buscar_turnos(cfg, dias)
     ok = True
 
     if anterior is None:
@@ -364,7 +396,8 @@ def alertas(cfg):
     if not ok:
         # No guardo el estado: así en la próxima revisión vuelve a intentar avisarte.
         sys.exit("No se pudo mandar el aviso a Telegram. Se reintenta en la próxima revisión.")
-    guardar_estado({"filtros": huella, "hasta": hasta, "vistos": sorted(actuales)})
+    guardar_estado({"filtros": huella, "hasta": hasta, "vistos": sorted(actuales),
+                    "resumen": (anterior or {}).get("resumen")})
     print("  Listo.")
 
 
