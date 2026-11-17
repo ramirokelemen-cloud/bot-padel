@@ -1,31 +1,36 @@
 """
 Bot de turnos de pádel para ATC (atcsports.io / Alquila Tu Cancha).
 
-Revisa los turnos libres de los clubes que elijas y te manda un mensaje
-de Telegram cuando se libera uno que cumple tus filtros (config.toml).
+Dos tipos de aviso por Telegram (los filtros están en config.toml):
+  * RESUMEN (todos los días a las 9:00): turnos libres de hoy y mañana.
+  * ALERTAS (cada 30 minutos): turnos que se LIBERARON desde la última
+    revisión, de hoy a 6 días, empezando como mínimo dentro de 2 horas.
 
 No hace falta tocar este archivo: toda la configuración está en config.toml.
 
 Uso:
-    python bot.py            -> revisa una vez y avisa lo nuevo (lo usa GitHub)
-    python bot.py --probar   -> muestra en pantalla qué turnos cumplen hoy y
-                                manda un mensaje de prueba a Telegram
-    python bot.py --loop 5   -> se queda corriendo y revisa cada 5 minutos
-                                (para dejarlo en tu propia compu)
+    python bot.py             -> revisa y avisa los turnos que se liberaron
+    python bot.py --resumen   -> manda el resumen de hoy y mañana
+    python bot.py --probar    -> muestra en pantalla qué turnos cumplen y
+                                 manda un mensaje de prueba a Telegram
+    python bot.py --loop 30   -> se queda corriendo en tu compu y revisa
+                                 cada 30 minutos
 
 Necesita dos datos de Telegram, como variables de entorno:
     TELEGRAM_TOKEN    (te lo da @BotFather)
     TELEGRAM_CHAT_ID  (tu número de usuario, te lo da @userinfobot)
 """
 
+import hashlib
 import json
 import os
 import sys
 import time
 import tomllib
+import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 API = "https://atcsports.io/api/v3/availability/sportclubs/{club}?date={fecha}"
 LINK = "https://atcsports.io/venues/{club}?dia={fecha}"
@@ -66,9 +71,21 @@ def limpiar_club(texto):
     return texto.split("?")[0].split("#")[0].strip("/")
 
 
+def clubes(cfg):
+    return list(dict.fromkeys(limpiar_club(c) for c in cfg["clubes"] if c.strip()))
+
+
 def a_minutos(hhmm):
     h, m = hhmm.strip().split(":")
     return int(h) * 60 + int(m)
+
+
+def huella_filtros(cfg):
+    """Resumen de los filtros: si cambian, el bot se reacomoda sin mandarte avisos de más."""
+    datos = {k: cfg.get(k) for k in ("duraciones", "techada", "superficies", "precio_maximo",
+                                     "horarios", "anticipacion_minima_horas")}
+    datos["clubes"] = sorted(clubes(cfg))
+    return hashlib.sha1(json.dumps(datos, sort_keys=True).encode()).hexdigest()[:12]
 
 
 def pedir_json(url):
@@ -126,24 +143,25 @@ def cumple(cancha, turno, fecha_dia, cfg):
 
 # ---------------------------------------------------------------- búsqueda
 
-def buscar_turnos(cfg):
-    """Consulta ATC y devuelve un diccionario {clave: datos} de turnos que cumplen."""
+def buscar_turnos(cfg, dias):
+    """Consulta ATC (hoy + los días que siguen) y devuelve {clave: datos} de turnos que cumplen."""
     encontrados = {}
     ahora = datetime.now(ARG)
     hoy = ahora.date()
-    for club in dict.fromkeys(limpiar_club(c) for c in cfg["clubes"] if c.strip()):
-        for i in range(int(cfg.get("dias_adelante", 7))):
+    minimo = ahora + timedelta(hours=float(cfg.get("anticipacion_minima_horas", 0)))
+    for club in clubes(cfg):
+        for i in range(dias):
             fecha = hoy + timedelta(days=i)
             try:
                 datos = pedir_json(API.format(club=urllib.parse.quote(club), fecha=fecha.isoformat()))
             except Exception as e:
                 print(f"  ! No pude consultar {club} el {fecha}: {e}")
                 continue
-            nombre_club = datos.get("name", club)
+            nombre_club = datos.get("name", club).strip()
             for cancha in datos.get("available_courts", []):
                 for turno in cancha.get("available_slots", []):
                     inicio = datetime.fromisoformat(turno["start"])
-                    if inicio <= ahora:
+                    if inicio < minimo:  # muy sobre la hora para organizar el partido
                         continue
                     if not cumple(cancha, turno, fecha, cfg):
                         continue
@@ -165,26 +183,29 @@ def buscar_turnos(cfg):
 
 # ---------------------------------------------------------------- mensajes
 
+def nombre_dia(d):
+    return DIAS[d.weekday()].capitalize().replace("Miercoles", "Miércoles").replace("Sabado", "Sábado")
+
+
 def describir(t):
     inicio = datetime.fromisoformat(t["inicio"])
-    dia = DIAS[inicio.weekday()].capitalize().replace("Miercoles", "Miércoles").replace("Sabado", "Sábado")
     techo = "techada" if t["techada"] else "descubierta"
     sup = t["superficie"].replace("blindex-", "blindex ").replace("synthetic", "sintético").replace("cement", "cemento")
     precio = f' · ${t["precio"]:,.0f}'.replace(",", ".") if t["precio"] else ""
     link = LINK.format(club=t["permalink"], fecha=t["fecha_dia"])
     return (f'🎾 <b>{t["club"]}</b> – {t["cancha"]}\n'
-            f'📅 {dia} {inicio:%d/%m} a las <b>{inicio:%H:%M}</b> ({t["duracion"]} min)\n'
+            f'📅 {nombre_dia(inicio)} {inicio:%d/%m} a las <b>{inicio:%H:%M}</b> ({t["duracion"]} min)\n'
             f'🏟 {techo}, {sup}{precio}\n'
             f'👉 <a href="{link}">Reservar</a>')
 
 
 def agrupar(turnos):
-    """Junta las canchas del mismo club y horario en un solo aviso."""
+    """Junta las canchas del mismo club, horario y duración en un solo aviso."""
     grupos = {}
     for t in turnos:
         grupos.setdefault((t["club"], t["inicio"], t["duracion"]), []).append(t)
     salida = []
-    for (_, inicio, _), lista in sorted(grupos.items(), key=lambda x: x[0][1]):
+    for _, lista in sorted(grupos.items(), key=lambda x: (x[0][1], x[0][0], x[0][2])):
         t = dict(lista[0])
         if len(lista) > 1:
             t["cancha"] = f'{len(lista)} canchas ({", ".join(x["cancha"] for x in lista)})'
@@ -192,18 +213,65 @@ def agrupar(turnos):
     return salida
 
 
-def enviar_telegram(texto):
+def resumen_compacto(turnos):
+    """Para el resumen diario: una línea por club y día con todos los horarios."""
+    por_dia = {}
+    for t in turnos:
+        inicio = datetime.fromisoformat(t["inicio"])
+        dia = date.fromisoformat(t["fecha_dia"])
+        club = por_dia.setdefault(dia, {}).setdefault((t["club"], t["permalink"]), {})
+        club.setdefault(f"{inicio:%H:%M}", set()).add(t["duracion"])
+    bloques = []
+    for dia in sorted(por_dia):
+        lineas = [f"📅 <b>{nombre_dia(dia)} {dia:%d/%m}</b>"]
+        for (club, permalink), horas in sorted(por_dia[dia].items()):
+            link = LINK.format(club=permalink, fecha=dia.isoformat())
+            detalle = ", ".join(f"{h} ({'/'.join(str(d) for d in sorted(ds))}′)" for h, ds in sorted(horas.items()))
+            lineas.append(f'🎾 <a href="{link}">{club}</a>: {detalle}')
+        bloques.append("\n".join(lineas))
+    return bloques
+
+
+def partir(texto, largo=3800):
+    """Telegram acepta ~4000 caracteres por mensaje: corta entre bloques, no a la mitad."""
+    partes, actual = [], ""
+    for bloque in texto.split("\n\n"):
+        if actual and len(actual) + len(bloque) + 2 > largo:
+            partes.append(actual)
+            actual = bloque
+        else:
+            actual = f"{actual}\n\n{bloque}" if actual else bloque
+    return partes + [actual] if actual else partes
+
+
+def enviar_telegram(texto, silencioso=False):
+    """Manda el mensaje. Devuelve True si salió bien (reintenta hasta 4 veces)."""
     token = os.environ.get("TELEGRAM_TOKEN", "").strip()
     chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     if not token or not chat:
         print("  (Telegram no configurado: el mensaje solo se muestra acá)\n" + texto)
-        return
-    for i in range(0, len(texto), 3800):  # Telegram corta en ~4000 caracteres
+        return True
+    for parte in partir(texto):
         datos = urllib.parse.urlencode({
-            "chat_id": chat, "text": texto[i:i + 3800],
+            "chat_id": chat, "text": parte,
             "parse_mode": "HTML", "disable_web_page_preview": "true",
+            "disable_notification": "true" if silencioso else "false",
         }).encode()
-        urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", datos, timeout=30)
+        for intento in range(1, 5):
+            try:
+                urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", datos, timeout=60)
+                break
+            except urllib.error.HTTPError as e:
+                detalle = e.read().decode(errors="ignore")
+                print(f"  ! Telegram rechazó el mensaje ({e.code}): {detalle}")
+                if e.code in (400, 401, 403, 404):  # token o chat id mal cargados: no tiene sentido reintentar
+                    return False
+            except Exception as e:
+                print(f"  ! Falló el envío a Telegram (intento {intento}/4): {e}")
+            time.sleep(5 * intento)
+        else:
+            return False
+    return True
 
 
 # ---------------------------------------------------------------- estado
@@ -211,74 +279,116 @@ def enviar_telegram(texto):
 def leer_estado():
     try:
         with open(ARCHIVO_ESTADO, encoding="utf-8") as f:
-            return json.load(f)
+            estado = json.load(f)
+        return estado if isinstance(estado, dict) else None
     except (FileNotFoundError, json.JSONDecodeError):
         return None
 
 
-def guardar_estado(claves):
+def guardar_estado(estado):
     os.makedirs(os.path.dirname(ARCHIVO_ESTADO), exist_ok=True)
     with open(ARCHIVO_ESTADO, "w", encoding="utf-8") as f:
-        json.dump(sorted(claves), f, indent=0)
+        json.dump(estado, f, indent=0)
 
 
-# ---------------------------------------------------------------- principal
+# ---------------------------------------------------------------- modos
 
-def revisar(cfg):
-    print(f"[{datetime.now(ARG):%d/%m %H:%M}] Revisando {len(cfg['clubes'])} club(es)...")
-    actuales = buscar_turnos(cfg)
-    anteriores = leer_estado()
+def armar_resumen(cfg):
+    dias = int(cfg.get("dias_resumen", 2))
+    turnos = buscar_turnos(cfg, dias)
+    hoy = datetime.now(ARG).date()
+    titulo = "☀️ <b>Resumen del día</b>: turnos libres de hoy" + (" y mañana" if dias == 2 else f" y los próximos {dias - 1} días")
+    if not turnos:
+        return titulo + "\n\nNo hay ninguno que cumpla tus filtros. Te aviso si se libera alguno.", turnos
+    texto = titulo + f" ({len(turnos)} en total, desde {hoy:%d/%m}):\n\n" + "\n\n".join(resumen_compacto(turnos.values()))
+    return texto, turnos
 
-    if anteriores is None:  # primera vez
+
+def resumen(cfg):
+    print(f"[{datetime.now(ARG):%d/%m %H:%M}] Armando el resumen diario...")
+    texto, turnos = armar_resumen(cfg)
+    print(f"  {len(turnos)} turno(s) en el resumen.")
+    if not enviar_telegram(texto):
+        sys.exit("No se pudo mandar el resumen a Telegram.")
+    print("  Listo.")
+
+
+def alertas(cfg):
+    dias = int(cfg.get("dias_alertas", 7))
+    ahora = datetime.now(ARG)
+    hasta = (ahora.date() + timedelta(days=dias - 1)).isoformat()
+    huella = huella_filtros(cfg)
+    print(f"[{ahora:%d/%m %H:%M}] Buscando turnos liberados en {len(clubes(cfg))} club(es), hasta el {hasta}...")
+    actuales = buscar_turnos(cfg, dias)
+    anterior = leer_estado()
+    ok = True
+
+    if anterior is None:
+        # Primera vez: guardo lo que hay y te mando el resumen para que veas que funciona.
         print(f"  Primera corrida: {len(actuales)} turno(s) cumplen tus filtros.")
-        if cfg.get("avisar_lo_que_ya_esta_libre", True):
-            if actuales:
-                lista = agrupar(actuales.values())
-                enviar_telegram("✅ <b>Bot activado.</b> Esto ya está libre ahora:\n\n"
-                                + "\n\n".join(describir(t) for t in lista[:25])
-                                + ("\n\n(y más...)" if len(lista) > 25 else "")
-                                + "\n\nDesde ahora te aviso solo cuando se libere algo nuevo.")
-            else:
-                enviar_telegram("✅ <b>Bot activado.</b> Ahora no hay turnos que cumplan tus filtros. "
-                                "Te aviso apenas se libere uno.")
+        texto, _ = armar_resumen(cfg)
+        ok = enviar_telegram("✅ <b>Bot activado.</b> Cada 30 minutos te aviso si se libera un turno "
+                             f"(hasta {dias - 1} días adelante y con al menos "
+                             f"{cfg.get('anticipacion_minima_horas', 0)} h de anticipación), "
+                             "y todos los días a las 9 te mando el resumen.\n\n" + texto)
+    elif anterior.get("filtros") != huella:
+        print("  Cambiaron los filtros o los clubes: me reacomodo sin mandar alertas.")
+        ok = enviar_telegram("⚙️ Vi que cambiaste los filtros o los clubes. Ya está aplicado: "
+                             "desde ahora te aviso con la configuración nueva.")
     else:
-        nuevos = [actuales[k] for k in actuales if k not in set(anteriores)]
-        print(f"  {len(actuales)} turno(s) libres que cumplen, {len(nuevos)} nuevo(s).")
+        vistos = set(anterior.get("vistos", []))
+        hasta_antes = anterior.get("hasta", hasta)
+        # "Liberado" = no estaba libre en la revisión anterior, y su día ya se estaba mirando
+        # (así no te aviso de golpe todos los turnos del día nuevo que entra a medianoche).
+        nuevos = [t for k, t in actuales.items() if k not in vistos and t["fecha_dia"] <= hasta_antes]
+        print(f"  {len(actuales)} turno(s) libres que cumplen, {len(nuevos)} liberado(s) recién.")
         if nuevos:
             lista = agrupar(nuevos)
-            titulo = "🚨 <b>¡Se liberó un turno!</b>" if len(lista) == 1 else f"🚨 <b>¡Se liberaron {len(lista)} turnos!</b>"
-            enviar_telegram(titulo + "\n\n" + "\n\n".join(describir(t) for t in lista))
+            titulo = ("🚨 <b>¡Se liberó un turno!</b>" if len(lista) == 1
+                      else f"🚨 <b>¡Se liberaron {len(lista)} turnos!</b>")
+            ok = enviar_telegram(titulo + "\n\n" + "\n\n".join(describir(t) for t in lista))
+        else:
+            modo = sin_tildes(str(cfg.get("sin_novedades", "silencioso")))
+            if modo in ("silencioso", "con_sonido"):
+                ok = enviar_telegram(f"🔎 {ahora:%H:%M} – No hay nuevos turnos disponibles.",
+                                     silencioso=(modo == "silencioso"))
 
-    guardar_estado(actuales.keys())
+    if not ok:
+        # No guardo el estado: así en la próxima revisión vuelve a intentar avisarte.
+        sys.exit("No se pudo mandar el aviso a Telegram. Se reintenta en la próxima revisión.")
+    guardar_estado({"filtros": huella, "hasta": hasta, "vistos": sorted(actuales)})
+    print("  Listo.")
 
 
 def probar(cfg):
     print("Buscando turnos que cumplen tus filtros...\n")
-    actuales = buscar_turnos(cfg)
-    lista = agrupar(actuales.values())
-    if not lista:
-        print("Ahora no hay ninguno libre que cumpla (es normal si son horarios muy buscados).")
-    for t in lista:
-        print(describir(t).replace("<b>", "").replace("</b>", "")
-              .split("\n👉")[0] + "\n")
-    enviar_telegram(f"👋 Mensaje de prueba del bot de pádel. Encontré {len(lista)} horario(s) "
-                    "que hoy cumplen tus filtros. ¡Si ves esto, Telegram funciona!")
+    texto, turnos = armar_resumen(cfg)
+    print(texto.replace("<b>", "").replace("</b>", ""))
+    enviar_telegram("👋 Mensaje de prueba del bot de pádel. ¡Si ves esto, Telegram funciona!")
     print("\nListo. Si configuraste Telegram, revisá tu celular.")
 
 
 if __name__ == "__main__":
     config = leer_config()
-    if "--probar" in sys.argv:
+    if "--resumen" in sys.argv:
+        resumen(config)
+    elif "--probar" in sys.argv:
         probar(config)
     elif "--loop" in sys.argv:
         idx = sys.argv.index("--loop")
-        minutos = int(sys.argv[idx + 1]) if len(sys.argv) > idx + 1 else 5
+        minutos = int(sys.argv[idx + 1]) if len(sys.argv) > idx + 1 else 30
         print(f"Bot corriendo. Revisa cada {minutos} minutos. Cerrá esta ventana para frenarlo.")
+        ultimo_resumen = None
         while True:
             try:
-                revisar(leer_config())
-            except Exception as e:
+                cfg = leer_config()
+                ahora = datetime.now(ARG)
+                if ahora.hour >= 9 and ultimo_resumen != ahora.date():
+                    resumen(cfg)
+                    ultimo_resumen = ahora.date()
+                alertas(cfg)
+            except (Exception, SystemExit) as e:
                 print("  ! Error, reintento en el próximo ciclo:", e)
             time.sleep(minutos * 60)
     else:
-        revisar(config)
+        alertas(config)
