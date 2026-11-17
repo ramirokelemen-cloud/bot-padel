@@ -316,6 +316,14 @@ def resumen(cfg):
 def alertas(cfg):
     dias = int(cfg.get("dias_alertas", 7))
     ahora = datetime.now(ARG)
+    ventana = str(cfg.get("horario_avisos", "")).strip()
+    if ventana:
+        desde, hasta_hora = (a_minutos(x) for x in ventana.split("-"))
+        if not desde <= ahora.hour * 60 + ahora.minute <= hasta_hora:
+            # Fuera de horario: no reviso ni toco la foto anterior, así lo que se libere
+            # de noche te lo aviso en la primera revisión de la mañana.
+            print(f"[{ahora:%d/%m %H:%M}] Fuera del horario de avisos ({ventana}): no hago nada.")
+            return
     hasta = (ahora.date() + timedelta(days=dias - 1)).isoformat()
     huella = huella_filtros(cfg)
     print(f"[{ahora:%d/%m %H:%M}] Buscando turnos liberados en {len(clubes(cfg))} club(es), hasta el {hasta}...")
