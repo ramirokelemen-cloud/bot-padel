@@ -19,9 +19,24 @@ clubes = [
     # "https://atcsports.io/venues/otro-club",     # <- ejemplo de cómo sumar uno
 ]
 
-# --- 2) CUÁNTOS DÍAS PARA ADELANTE ------------------------------
-# Cuántos días revisar contando hoy. 7 = toda la semana que viene.
-dias_adelante = 7
+# --- 2) AVISOS --------------------------------------------------
+# RESUMEN DIARIO (9:00 hs): cuántos días mostrar contando hoy. 2 = hoy y mañana.
+dias_resumen = 2
+
+# ALERTAS (cada 30 min): cuántos días vigilar contando hoy. 7 = hoy + 6 días.
+dias_alertas = 7
+
+# Solo turnos que empiecen dentro de al menos estas horas (para organizar el partido).
+anticipacion_minima_horas = 2
+
+# Si en una revisión no se liberó nada, ¿te mando "No hay nuevos turnos disponibles"?
+#   "silencioso" = te llega el mensaje pero sin sonar ni vibrar
+#   "con_sonido" = te llega y suena como cualquier mensaje
+#   "no"         = no te manda nada si no hay novedades
+sin_novedades = "silencioso"
+
+# (Los horarios de las revisiones —9:00 y cada 30 min— se cambian en
+#  .github/workflows/bot.yml; si querés cambiarlos, pedímelo.)
 
 # --- 3) DURACIÓN DEL TURNO -------------------------------------
 # Duraciones aceptadas en minutos. Ej: [60, 90, 120]. Dejá [] para cualquiera.
@@ -38,12 +53,7 @@ superficies = []
 # Precio máximo en pesos por turno. Poné 0 para no filtrar por precio.
 precio_maximo = 0
 
-# --- 5) AVISO DEL PRIMER ARRANQUE ------------------------------
-# La primera vez que corre, ¿te mando la lista de lo que YA está libre?
-# (después solo te avisa de los turnos que se liberen)
-avisar_lo_que_ya_esta_libre = true
-
-# --- 6) HORARIOS POR DÍA ---------------------------------------
+# --- 5) HORARIOS POR DÍA ---------------------------------------
 # Rango de horario en que puede EMPEZAR el turno, formato "desde-hasta" (24 hs).
 # Para que un día no te avise nunca, dejalo vacío: ""
 # (esta sección tiene que quedar al final del archivo)
